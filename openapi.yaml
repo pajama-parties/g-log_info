@@ -1,0 +1,773 @@
+openapi: 3.0.3
+info:
+  title: g-log API
+  version: 0.1.0
+  description: |
+    g-log 프론트엔드(js/data.js, 각 화면 js)를 기준으로 작성한 백엔드 API 명세입니다.
+
+    공통 규칙
+    - 모든 주소는 `baseUrl`(`/api`) 아래에 있습니다.
+    - 조회(GET) 응답은 항상 JSON 배열입니다. 한 건이어도 `[ {...} ]` 형태로 내려줍니다.
+      프론트엔드는 배열이 아니거나 요청이 실패하면 `[]`로 처리합니다.
+    - 인증은 세션 쿠키를 사용합니다. 프론트엔드는 `credentials: 'same-origin'`으로 요청합니다.
+    - 시각 표시 문자열(`received`, `time`, `group` 등)은 현재 화면이 서버가 내려준 문자열을 그대로 표시하는 필드입니다.
+
+    `x-status: 화면 연동됨`은 data.js의 ENDPOINTS에 이미 등록된 조회 API를 뜻합니다.
+    `x-status: 제안`은 지금 화면 안에서만 처리하는 동작(글쓰기, 읽음 처리, 기준 저장 등)을 서버로 옮길 때 쓰도록 제안하는 API입니다.
+servers:
+  - url: /api
+tags:
+  - name: 인증
+  - name: 화분
+  - name: 알림
+  - name: 조언
+  - name: 커뮤니티
+  - name: 계정
+
+security:
+  - cookieAuth: []
+
+paths:
+  # ---------------------------------------------------------------- 인증
+  /auth/kakao:
+    post:
+      tags: [인증]
+      summary: 카카오 로그인
+      x-status: 제안
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, description: 카카오 인가 코드 }
+      responses:
+        '200':
+          description: 로그인 성공. 세션 쿠키를 설정합니다.
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/login:
+    post:
+      tags: [인증]
+      summary: 이메일 로그인
+      x-status: 제안
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: 로그인 성공. 세션 쿠키를 설정합니다.
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [인증]
+      summary: 로그아웃
+      x-status: 제안
+      responses:
+        '204': { description: 세션을 종료했습니다. }
+
+  # ---------------------------------------------------------------- 화분
+  /pots:
+    get:
+      tags: [화분]
+      summary: 대시보드용 화분 요약 목록
+      description: 화분별 현재 수분, 상태, 적정 범위와 시간별(24개)·주간(7개) 수분값을 내려줍니다. ENDPOINTS.pots
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 화분 요약 배열
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/PotSummary' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [화분]
+      summary: 화분 추가
+      description: |
+        화분 추가 1단계(이름·작물·흙 입력) 이후 호출합니다. 응답의 `code`를 센서에 입력하면 연결됩니다.
+        등록 코드는 10분(600초) 동안 유효하고, 연결되기 전까지 화분 상태는 `수집 대기`입니다.
+      x-status: 제안
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PotCreate' }
+      responses:
+        '201':
+          description: 화분을 만들고 센서 등록 코드를 발급했습니다.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    pot: { $ref: '#/components/schemas/ManagedPot' }
+                    code: { type: string, example: K7P-3QX }
+                    expiresIn: { type: integer, description: 남은 유효 시간(초), example: 600 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /pots/managed:
+    get:
+      tags: [화분]
+      summary: 화분 목록·상세용 목록
+      description: 화분 목록과 화분 상세 화면에서 씁니다. 상세 화면도 이 목록에서 id로 찾습니다. ENDPOINTS.managedPots
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 관리 화분 배열
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ManagedPot' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /pots/{potId}/connection:
+    get:
+      tags: [화분]
+      summary: 센서 연결 여부 확인
+      description: 화분 추가 2단계에서 센서가 연결됐는지 주기적으로 확인합니다.
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PotId' }]
+      responses:
+        '200':
+          description: 연결 상태
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    connected: { type: boolean }
+                    sensorId: { type: string, nullable: true, example: GL-0012 }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /pots/{potId}/range:
+    put:
+      tags: [화분]
+      summary: 화분 적정 범위(경보 기준) 저장
+      description: 화분 상세의 "기준 저장" 버튼입니다. 추천값은 건조 35%, 과습 80%입니다.
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PotId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Range' }
+      responses:
+        '200':
+          description: 저장된 기준
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Range' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /pots/{potId}/visual:
+    put:
+      tags: [화분]
+      summary: 화분 이미지 설정 저장
+      description: 아이콘과 배경색을 고르거나 사진을 올립니다. 사진은 multipart로 보냅니다.
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PotId' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                icon: { type: string, example: plant }
+                color: { type: string, enum: ['#304d42', '#527860', '#8a6f43', '#607b93', '#8b6e76'] }
+                photo: { type: string, format: binary }
+      responses:
+        '200':
+          description: 저장된 이미지 설정
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/PotVisual' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- 알림
+  /notices:
+    get:
+      tags: [알림]
+      summary: 알림 목록
+      description: 알림함과 상단 메뉴의 안 읽음 표시에 씁니다. ENDPOINTS.notices
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 알림 배열(최신순)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Notice' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /notices/weekly:
+    get:
+      tags: [알림]
+      summary: 지난 7일 경보 요약
+      description: 화분마다 한 줄씩 건조·과습·오프라인 경보 횟수를 내려줍니다. ENDPOINTS.weekly
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 화분별 경보 횟수 배열
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/WeeklySummary' } }
+  /notices/{noticeId}/read:
+    post:
+      tags: [알림]
+      summary: 알림 하나 읽음 처리
+      description: '"읽음 처리" 버튼을 누르거나 알림을 열었을 때 호출합니다.'
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/NoticeId' }]
+      responses:
+        '204': { description: 읽음 처리했습니다. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /notices/read-all:
+    post:
+      tags: [알림]
+      summary: 모든 알림 읽음 처리
+      x-status: 제안
+      responses:
+        '204': { description: 모두 읽음 처리했습니다. }
+  /notices/{noticeId}:
+    delete:
+      tags: [알림]
+      summary: 알림 삭제
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/NoticeId' }]
+      responses:
+        '204': { description: 삭제했습니다. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /notices/settings:
+    get:
+      tags: [알림]
+      summary: 알림 받기 설정 조회
+      x-status: 제안
+      responses:
+        '200':
+          description: 알림 설정
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/NoticeSettings' } }
+    patch:
+      tags: [알림]
+      summary: 알림 받기 설정 변경
+      description: 바꾼 항목만 보냅니다.
+      x-status: 제안
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NoticeSettings' }
+      responses:
+        '200':
+          description: 변경된 전체 설정
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/NoticeSettings' } }
+
+  # ---------------------------------------------------------------- 조언
+  /advices:
+    get:
+      tags: [조언]
+      summary: 조언 기록 목록
+      description: ENDPOINTS.advices
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 조언 배열(최신순)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Advice' } }
+    post:
+      tags: [조언]
+      summary: 새 조언 요청
+      description: 가장 최근 측정값으로 조언을 만듭니다. potId를 비우면 서버가 화분을 고릅니다.
+      x-status: 제안
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                potId: { type: integer, nullable: true }
+      responses:
+        '201':
+          description: 만들어진 조언
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Advice' } }
+  /advices/{adviceId}/feedback:
+    put:
+      tags: [조언]
+      summary: 조언 평가 저장
+      description: true는 "도움이 됐어요", false는 "아쉬워요", null은 평가 취소입니다.
+      x-status: 제안
+      parameters:
+        - in: path
+          name: adviceId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [helpful]
+              properties:
+                helpful: { type: boolean, nullable: true }
+      responses:
+        '204': { description: 저장했습니다. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- 커뮤니티
+  /community/posts:
+    get:
+      tags: [커뮤니티]
+      summary: 커뮤니티 글 목록
+      description: |
+        댓글(comments)을 포함한 글 배열을 최신순으로 내려줍니다. ENDPOINTS.posts
+        현재 분류·검색 필터는 화면에서 처리하므로 쿼리 파라미터는 선택 사항입니다.
+      x-status: 화면 연동됨
+      parameters:
+        - in: query
+          name: category
+          schema: { type: string, enum: [질문, 기록 공유, 팁] }
+        - in: query
+          name: q
+          description: 제목·본문·작물·작성자에서 검색합니다.
+          schema: { type: string }
+      responses:
+        '200':
+          description: 글 배열
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Post' } }
+    post:
+      tags: [커뮤니티]
+      summary: 글 쓰기
+      description: |
+        `attachPotId`와 `attachPeriod`를 보내면 서버가 그 시점의 그래프 값을 복사해 `attach`로 고정합니다.
+        센서 번호와 등록 코드는 글에 담지 않습니다.
+      x-status: 제안
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/PostCreate' }
+      responses:
+        '201':
+          description: 올라간 글
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Post' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /community/posts/{postId}:
+    delete:
+      tags: [커뮤니티]
+      summary: 글 삭제
+      description: 내가 쓴 글만 삭제할 수 있습니다.
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PostId' }]
+      responses:
+        '204': { description: 삭제했습니다. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /community/posts/{postId}/like:
+    put:
+      tags: [커뮤니티]
+      summary: 공감하기
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PostId' }]
+      responses:
+        '200': { $ref: '#/components/responses/LikeResult' }
+    delete:
+      tags: [커뮤니티]
+      summary: 공감 취소
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PostId' }]
+      responses:
+        '200': { $ref: '#/components/responses/LikeResult' }
+  /community/posts/{postId}/comments:
+    post:
+      tags: [커뮤니티]
+      summary: 댓글 쓰기
+      x-status: 제안
+      parameters: [{ $ref: '#/components/parameters/PostId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1 }
+      responses:
+        '201':
+          description: 등록된 댓글
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Comment' } }
+  /community/posts/{postId}/comments/{commentId}:
+    delete:
+      tags: [커뮤니티]
+      summary: 댓글 삭제
+      description: 내가 쓴 댓글만 삭제할 수 있습니다.
+      x-status: 제안
+      parameters:
+        - { $ref: '#/components/parameters/PostId' }
+        - in: path
+          name: commentId
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: 삭제했습니다. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- 계정
+  /me:
+    get:
+      tags: [계정]
+      summary: 내 정보
+      description: 프론트엔드는 배열의 첫 번째 값을 사용합니다. ENDPOINTS.user
+      x-status: 화면 연동됨
+      responses:
+        '200':
+          description: 내 정보(한 건짜리 배열)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [계정]
+      summary: 내 정보 변경
+      description: 닉네임 변경과 카카오톡 메시지 전송 동의 여부를 저장합니다. 바꾼 항목만 보냅니다.
+      x-status: 제안
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1 }
+                kakaoConsent: { type: boolean }
+      responses:
+        '200':
+          description: 변경된 내 정보
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/User' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [계정]
+      summary: 서비스 탈퇴
+      description: 화면에서 확인 문구 "삭제"를 입력해야 버튼이 활성화됩니다.
+      x-status: 제안
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: string, enum: [삭제] }
+      responses:
+        '204': { description: 탈퇴 처리하고 세션을 종료했습니다. }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: SESSION
+
+  parameters:
+    PotId:
+      in: path
+      name: potId
+      required: true
+      schema: { type: integer }
+    NoticeId:
+      in: path
+      name: noticeId
+      required: true
+      schema: { type: integer }
+    PostId:
+      in: path
+      name: postId
+      required: true
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: 요청 값이 올바르지 않습니다.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: 로그인이 필요합니다.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 권한이 없습니다.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: 대상을 찾을 수 없습니다.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    LikeResult:
+      description: 공감 상태
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              type: object
+              properties:
+                liked: { type: boolean }
+                likes: { type: integer }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+
+    PotStatus:
+      type: string
+      description: 화분 상태
+      enum: [적정, 건조, 과습, 오프라인, 수집 대기]
+
+    Watering:
+      type: object
+      nullable: true
+      properties:
+        last: { type: string, example: 5일 전 }
+        interval: { type: string, example: 8일 }
+        next: { type: string, example: 3일 후 }
+
+    PotSummary:
+      type: object
+      required: [id, name, value, status]
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: 거실 몬스테라 }
+        short: { type: string, example: 몬스테라 }
+        place: { type: string, example: 거실 창가 }
+        watering: { $ref: '#/components/schemas/Watering' }
+        value: { type: number, nullable: true, description: 현재 토양 수분(%), example: 66 }
+        status: { $ref: '#/components/schemas/PotStatus' }
+        received: { type: string, description: 마지막 수신 시각 표시 문자열, example: 18분 전 수신 }
+        range:
+          type: array
+          description: '[건조 기준, 과습 기준] (%)'
+          items: { type: number }
+          minItems: 2
+          maxItems: 2
+          example: [45, 75]
+        hourly:
+          type: array
+          description: 최근 24시간 시간별 수분값(오래된 값부터). 오프라인이면 24개보다 적을 수 있습니다.
+          items: { type: number }
+        weekly:
+          type: array
+          description: 최근 7일 일별 수분값(오래된 값부터)
+          items: { type: number }
+
+    ManagedPot:
+      type: object
+      required: [id, name, status]
+      properties:
+        id: { type: integer, example: 1 }
+        sensorId: { type: string, example: GL-0012 }
+        growingDays: { type: integer, description: 키운 일수, example: 32 }
+        name: { type: string, example: 거실 몬스테라 }
+        value: { type: number, nullable: true, example: 66 }
+        status: { $ref: '#/components/schemas/PotStatus' }
+        received: { type: string, example: 18분 전 수신 }
+        plantType: { type: string, example: 몬스테라 }
+        soil: { type: string, example: 실내식물용 배양토 }
+        range:
+          type: array
+          items: { type: number }
+          example: [35, 80]
+        hourly:
+          type: array
+          items: { type: number }
+        weekly:
+          type: array
+          items: { type: number }
+        watering: { $ref: '#/components/schemas/Watering' }
+        visual: { $ref: '#/components/schemas/PotVisual' }
+
+    PotCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: 베란다 바질 }
+        plantType: { type: string, description: 비우면 '작물 미지정', example: 바질 }
+        soil: { type: string, description: 비우면 '흙 미지정', example: 허브용 상토 }
+
+    Range:
+      type: object
+      required: [lower, upper]
+      properties:
+        lower: { type: integer, minimum: 5, maximum: 95, description: 건조 기준(%), example: 35 }
+        upper: { type: integer, minimum: 5, maximum: 95, description: 과습 기준(%), example: 80 }
+
+    PotVisual:
+      type: object
+      properties:
+        icon: { type: string, example: plant }
+        color: { type: string, example: '#304d42' }
+        photo: { type: string, format: uri, nullable: true }
+
+    Tone:
+      type: string
+      enum: [건조, 과습, 적정, 오프라인, 조언, 안내]
+
+    Notice:
+      type: object
+      required: [id, tone, pot, title, unread]
+      properties:
+        id: { type: integer, example: 1 }
+        tone: { $ref: '#/components/schemas/Tone' }
+        pot: { type: string, description: 화분 이름, example: 베란다 바질 }
+        potId: { type: integer, description: 화분 id(권장 추가 필드. 지금 화면은 이름으로 화분을 찾습니다) }
+        title: { type: string, example: 수분이 건조 기준 아래로 내려갔어요 }
+        body: { type: string }
+        time: { type: string, example: 12분 전 }
+        group: { type: string, enum: [오늘, 어제, 이번 주] }
+        unread: { type: boolean }
+
+    WeeklySummary:
+      type: object
+      properties:
+        pot: { type: string, example: 베란다 바질 }
+        dry: { type: integer, description: 건조 경보 횟수, example: 4 }
+        wet: { type: integer, description: 과습 경보 횟수, example: 0 }
+        offline: { type: integer, description: 오프라인 경보 횟수, example: 0 }
+
+    NoticeSettings:
+      type: object
+      properties:
+        dry: { type: boolean, description: 건조 경보 }
+        wet: { type: boolean, description: 과습 경보 }
+        offline: { type: boolean, description: 센서 연결 끊김(2시간 넘게 값이 없을 때) }
+        advice: { type: boolean, description: 새 조언 }
+
+    Advice:
+      type: object
+      required: [id, pot, tone, text]
+      properties:
+        id: { type: integer, example: 1 }
+        pot: { type: string, example: 베란다 바질 }
+        potId: { type: integer, description: 화분 id(권장 추가 필드) }
+        tone: { type: string, enum: [건조, 과습, 적정, 오프라인] }
+        value: { type: number, nullable: true, description: 조언을 받은 시점의 수분(%), example: 22 }
+        text: { type: string }
+        basis: { type: string, description: 조언 근거, example: 받은 시점 수분 22% · 건조 기준 35% · 최근 6시간 동안 6%p 하락 }
+        time: { type: string, example: 오늘 오전 9:20 }
+        group: { type: string, enum: [오늘, 어제, 이번 주] }
+        helpful: { type: boolean, nullable: true, description: 'true: 도움이 됐어요, false: 아쉬워요, null: 평가 안 함' }
+
+    ChartSnapshot:
+      type: object
+      nullable: true
+      description: 글을 올린 시점에 고정한 그래프
+      properties:
+        label: { type: string, example: 바질 화분 · 최근 24시간 }
+        period: { type: string, enum: [24시간, 7일] }
+        points: { type: array, items: { type: number } }
+        lower: { type: number, example: 30 }
+        upper: { type: number, example: 80 }
+
+    Comment:
+      type: object
+      required: [id, author, at, text]
+      properties:
+        id: { type: string, example: c1 }
+        author: { type: string, example: 허브정원 }
+        at:
+          description: 작성 시각. epoch ms 또는 ISO 8601 문자열을 모두 받습니다.
+          oneOf:
+            - { type: integer, format: int64 }
+            - { type: string, format: date-time }
+        text: { type: string }
+        mine: { type: boolean, description: 내가 쓴 댓글인지 여부 }
+
+    Post:
+      type: object
+      required: [id, category, author, at, title, body]
+      properties:
+        id: { type: string, example: p1 }
+        category: { type: string, enum: [질문, 기록 공유, 팁] }
+        crop: { type: string, description: 작물. 비우면 '공통', example: 바질 }
+        author: { type: string, example: 바질집사 }
+        at:
+          description: 올린 시각. epoch ms 또는 ISO 8601 문자열을 모두 받습니다.
+          oneOf:
+            - { type: integer, format: int64 }
+            - { type: string, format: date-time }
+        mine: { type: boolean, description: 내가 쓴 글인지 여부 }
+        title: { type: string }
+        body: { type: string, description: 줄바꿈은 \n }
+        attach: { $ref: '#/components/schemas/ChartSnapshot' }
+        photo: { type: string, format: uri, nullable: true }
+        likes: { type: integer, example: 12 }
+        liked: { type: boolean, description: 내가 공감했는지 여부 }
+        comments:
+          type: array
+          items: { $ref: '#/components/schemas/Comment' }
+
+    PostCreate:
+      type: object
+      required: [category, title, body]
+      properties:
+        category: { type: string, enum: [질문, 기록 공유, 팁] }
+        crop: { type: string, maxLength: 20 }
+        title: { type: string }
+        body: { type: string }
+        attachPotId: { type: integer, description: 그래프를 붙일 화분 id }
+        attachPeriod: { type: string, enum: [24시간, 7일] }
+        photo: { type: string, format: binary }
+
+    User:
+      type: object
+      properties:
+        name: { type: string, example: 김지은 }
+        role: { type: string, example: 식물 집사 }
+        email: { type: string, format: email, example: jieun@example.com }
+        connectedAt: { type: string, description: 카카오 연결일 표시 문자열, example: 10월 30일 }
+        kakaoConsent: { type: boolean, description: 카카오톡 메시지 전송 동의 }
+        potCount: { type: integer, example: 4 }
+        sensorOnline: { type: integer, example: 3 }
+        sensorTotal: { type: integer, example: 4 }
+        recordedDays: { type: integer, example: 32 }
