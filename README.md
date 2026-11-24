@@ -2,7 +2,7 @@
 
 g-log는 화분에 꽂은 센서가 한 시간마다 토양 수분을 기록하고, 건조·과습·센서 연결 끊김처럼 사용자가 확인해야 하는 상황을 알려 주는 실내 식물 수분 관리 서비스다. 이 저장소에는 g-log 백엔드의 API 명세(`openapi.yaml`)와, 그 명세를 Swagger UI로 보여 주는 페이지가 들어 있다.
 
-- API 문서: https://pajama-parties.github.io/g-log_swagger/
+- API 문서: https://pajama-parties.github.io/g-log_info/
 
 ## 주요 기능
 
